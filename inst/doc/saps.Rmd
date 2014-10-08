@@ -1,0 +1,167 @@
+---
+title: "SAPS Vignette"
+author: "Daniel Schmolze"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    fig_width: 7
+    fig_height: 5
+vignette: >
+  %\VignetteIndexEntry{SAPS Vignette}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+---
+# Welcome
+
+Welcome to the **saps** package! This vignette will explain the functionality of the package via the hands-on creation of a sample dataset. For an in-depth explanation of the saps algorithm itself, the original publication should be consulted.
+
+The package is usually accessed via a single function called `saps`. This function requires, at a minimum, four things:
+
+* Some candidate genesets (at least one)
+* Expression data for a set of genes
+* Patient survival times
+* An indication of whether each patient was lost to followup
+
+We'll create each of these items. 
+
+First, let's load the saps package:
+
+```{r, message=FALSE}
+library(saps)
+```
+
+
+# Creating a dataset
+
+Let's suppose we have 25 patients in our study, and each patient was followed until they died from disease (i.e. nobody was lost to followup). In this case the "followup" vector is simply a series of 25 1s:
+
+
+```{r}
+followup <- rep(1, 25)
+```
+
+Let's further suppose that five patients in the study had markedly superior survival times compared to the remainder of the patients. We'll express survival times in days, which is the convention:
+
+```{r}
+time <- c(25, 27, 24, 21, 26, sample(1:3, 20, TRUE))*365
+```
+
+The first five patients all survived 20+ years, while the remainder only survived 1-3 years.
+
+We'll next create a dataset of gene expression data for 100 genes, which we'll label "1" through "100". We'll need a row of data for each patient, and each column will hold data for a single gene:
+
+```{r}
+dat <- matrix(rnorm(25*100), nrow=25, ncol=100)
+colnames(dat) <- as.character(1:100)
+```
+
+Next we'll create a couple genesets. A geneset is simply a vector of gene labels. We'll create two genesets containing five genes each, with randomly selected genes. 
+
+```{r}
+set1 <- sample(colnames(dat), 5)
+set2 <- sample(colnames(dat), 5)
+```
+
+Next we'll use `rbind` to concatenate the two genesets.
+
+```{r}
+genesets <- rbind(set1, set2)
+```
+
+# Computing saps statistics
+We're now ready to proceed with a basic saps analysis. We'll use 100 permutations to generate p_random, but with real data it's wise to use more (the default of 1000 is good).
+
+```{r firstrun, echo=FALSE, message=FALSE, cache=TRUE}
+results <- saps(genesets, dat, time, followup, random.samples=100)
+```
+
+We're not expecting any significant results with these genesets, since the data is normally distributed and the genesets were randomly generated. To get a quick look at the saps statistics, we can access the `saps_table` dataframe. We'll examine the statistics unadjusted for multiple comparisons first.
+
+```{r}
+saps_table <- results$saps_table
+saps_table[1:7]
+```
+
+As expected, none of the three basic saps statistics (p_pure, p_random, p_enrich) achieve significance, and consequently the saps score is also not significant. We haven't asked for a saps q-value, so the corresponding field is set to NA. The data adjusted for multiple comparisons will only decrease the significance, so there's no point in examining the adjusted values.
+
+# Achieving significance
+We know the first five patients in our study survived much longer, but this fact is currently not reflected in any differences in gene expression levels amongst those patients. We'll artifically tweak the data for these five patients. We'll specifically alter the expression values for the genes in `set1`.
+
+```{r}
+dat2 <- dat
+dat2[1:5, set1] <- dat2[1:5, set1]+10
+```
+
+Now the patients surviving longer have much higher expression levels of the genes in `set1`. Let's see what effect this has on the computed saps statistics.
+
+```{r secondrun, echo=FALSE, message=FALSE, cache=TRUE}
+results <- saps(genesets, dat2, time, followup, random.samples=100)
+saps_table <- results$saps_table
+saps_table[1:7]
+```
+
+We expect p_pure and p_enrich to achieve significance. Since our dataset only has 100 genes, random genesets may achieve significant p_pure values by chance, and p_random may or may not be significant. The saps score therefore may or may not achieve significance (absolute value greater than 1.3). With larger datasets, the chances of a significant p_random will increase.
+
+We should examine the multiple comparison adjusted values to make sure the significance still holds.
+
+```{r}
+saps_table[8:11]
+```
+
+# Visualization
+To get a visual sense of the signifiance of p_pure, let's look at a Kaplan-Meier survival curve for geneset `set1` using the `plotKM` function. We'll convert our survival times back to years first.
+
+```{r, message=FALSE}
+set1 <- results$genesets[["set1"]]
+
+plotKM(set1, time/365, followup, x.label="Overall survival (years)")
+```
+
+We've artifically linked higher expression of `set1` genes to better survival, and the k-means clustering performed to calculate p_pure can thus readily cluster patients into two survival groups based on differential expression of these genes.
+
+Let's also have a look at the distribution of p_pure values for randomly generated genesets, and see how the p_pure for `set1` compares.
+
+```{r}
+plotRandomDensity(set1)
+```
+
+Again, we expect few random genesets to achieve significant p_pure values, but since our dataset is small, some may by chance.
+
+Finally, let's visualize the concordance indices for the genes in `set1` versus those of all the genes in the dataset.
+
+```{r}
+plotEnrichment(set1, results$rankedGenes)
+```
+
+The concordance indices for `set1` are clustered towards one extreme of the distribution of all concordance indices, which explains the significant p_enrich.
+
+# Computing saps q-values
+We haven't yet computed q-values, so let's do that. This is a computationally expensive procedure, since saps scores (and thus all the saps statistics) need to be computed for a large number of randomly generated genesets (1000 by default). In many applications, this final step may not be necessary, but it does add an additional layer of robustness to the method. 
+
+If your computer supports multiple cpus or cores, it is highly recommended that you call `saps` with `cpus` set to the maximum allowable (often this will be 4). One can also adjust the `qvalue.samples` value to a lower number. Caution should be excercised if this is done, because in the event that no random genesets achieve saps scores as significant as the candidate set, the q-value returned is not 0 but `1/(qvalue.samples+1)`. Thus, choosing a low value for `qvalue.samples` may result in non-significant q-values.
+
+Nevertheless, for the purposes of this vignette we will only compute saps scores for 10 random genesets, knowing that such a low number cannot achieve significance.
+
+```{r qvalue, message=FALSE, cache=TRUE}
+results <- saps(genesets, dat2, time, followup, random.samples=100, 
+                compute_qvalue=TRUE, qvalue.samples=10)
+
+saps_table <- results$saps_table
+
+saps_table[, c("saps_qvalue", "saps_qvalue_adj")]
+```
+
+We can use the function `plotSapsScoreDensity` to visualize the distribution of random saps scores.
+
+```{r}
+set1 <- results$genesets[["set1"]]
+
+plotSapsScoreDensity(set1)
+```
+
+We expect that few if any random genesets will have achieved a -log10 saps score at least as small as that for `set1`, but again, because we have only calculated saps scores for 10 random genesets, we cannot achieve a significant q-value. If a higher value for `qvalue.samples` is chosen, a significant q-value may well be obtained.
+
+# Wrapping up
+This completes the vignette. All the core functionality of the package has been utilized, albeit in a highly artificial context. For details of the various functions, and for an overview of the saps method, please read the documentation. For a complete explanation of the method, the original publication by Beck et. al. should be consulted.
+
